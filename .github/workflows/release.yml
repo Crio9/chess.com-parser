@@ -1,0 +1,110 @@
+name: Native releases
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - pyproject.toml
+      - .github/workflows/release.yml
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the version in pyproject.toml from main
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: windows-x64
+            runner: windows-2022
+            arch: x64
+          - target: linux-x64
+            runner: ubuntu-22.04
+            arch: x64
+          - target: macos-arm64
+            runner: macos-15
+            arch: arm64
+          - target: macos-x64
+            runner: macos-15-intel
+            arch: x64
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          architecture: ${{ matrix.arch }}
+      - name: Install build dependencies
+        run: python -m pip install ".[release]"
+      - name: Build standalone executable
+        run: python -m PyInstaller --noconfirm --onefile --name chess-pgn run_chess_pgn.py
+      - name: Check executable and create archive
+        run: python scripts/package_release.py "${{ matrix.target }}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: chess-pgn-${{ matrix.target }}
+          path: release/chess-pgn-${{ matrix.target }}.*
+          if-no-files-found: error
+          compression-level: 0
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.publish)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: chess-pgn-*
+          path: release
+          merge-multiple: true
+      - name: Publish tested archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          tag="v$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          state="$(gh release view "$tag" --json isDraft,targetCommitish \
+            --jq 'if .isDraft then .targetCommitish else "published" end' 2>/dev/null || true)"
+          if [[ "$state" == published ]]; then
+            echo "$tag is already published."
+            exit 0
+          fi
+
+          tagged_commit="$(git ls-remote origin "refs/tags/$tag" "refs/tags/$tag^{}" | tail -n 1 | cut -f1)"
+          if [[ -n "$tagged_commit" && "$tagged_commit" != "$GITHUB_SHA" ]]; then
+            echo "$tag points to another commit. Bump the package version." >&2
+            exit 1
+          fi
+
+          if [[ -z "$state" ]]; then
+            gh release create "$tag" --draft --target "$GITHUB_SHA" --title "$tag" \
+              --notes 'Standalone Chess PGN CLI for Windows, macOS and Linux. Extract your platform archive and run chess-pgn from a terminal. Python is bundled.'
+          elif [[ "$state" != "$GITHUB_SHA" ]]; then
+            echo "The draft for $tag targets a different commit." >&2
+            exit 1
+          fi
+
+          gh release upload "$tag" release/chess-pgn-* --clobber
+          gh release edit "$tag" --draft=false

@@ -10,6 +10,9 @@ readme = "README.md"
 requires-python = ">=3.9"
 dependencies = ["pyperclip>=1.11,<2"]
 
+[project.optional-dependencies]
+release = ["certifi", "pyinstaller==6.22.3"]
+
 [project.scripts]
 chess-pgn = "chess_pgn.cli:main"
 
