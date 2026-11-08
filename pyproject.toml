@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chess-pgn-cli"
+version = "0.1.0"
+description = "Export recent Chess.com games as PGN."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = ["pyperclip>=1.11,<2"]
+
+[project.scripts]
+chess-pgn = "chess_pgn.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
